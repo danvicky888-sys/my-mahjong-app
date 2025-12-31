@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>麻將戰績紀錄 v4</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
+        body { font-family: 'Noto Sans TC', sans-serif; background-color: #f1f5f9; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .active-tab { border-bottom: 4px solid #10b981; color: #10b981; font-weight: 900; }
+    </style>
+</head>
+<body class="pb-24">
+
+    <nav class="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 flex z-50 shadow-[0_-5px_15px_rgba(0,0,0,0.05)]">
+        <button onclick="switchTab('dashboard')" id="tab-dashboard" class="flex-1 py-4 text-slate-400 active-tab">📊 戰報</button>
+        <button onclick="switchTab('record')" id="tab-record" class="flex-1 py-4 text-slate-400">📝 紀錄</button>
+        <button onclick="switchTab('admin')" id="tab-admin" class="flex-1 py-4 text-slate-400">⚙️ 管理</button>
+    </nav>
+
+    <div class="max-w-md mx-auto p-4">
+        
+        <section id="dashboard-page" class="tab-content active">
+            <header class="mb-6 mt-4"><h1 class="text-3xl font-black text-slate-800">年度戰績榜</h1><p id="currentSeasonLabel" class="text-slate-500 font-bold uppercase"></p></header>
+            <div id="dashboardCard" class="bg-white rounded-[2rem] p-6 shadow-sm border border-slate-100">
+                <div class="flex justify-between items-center mb-6"><span class="text-slate-400 text-sm font-bold tracking-widest">RANKING</span><button onclick="exportImage()" class="text-xs bg-emerald-50 text-emerald-600 px-3 py-1 rounded-full font-black">📸 分享圖片</button></div>
+                <div class="space-y-5" id="rankingList"></div>
+            </div>
+        </section>
+
+        <section id="record-page" class="tab-content">
+            <header class="mb-6 mt-4 flex justify-between items-end"><h1 class="text-3xl font-black text-slate-800">新增紀錄</h1><input type="date" id="matchDate" class="bg-transparent text-slate-600 font-bold border-none text-right"></header>
+            <p class="text-xs text-slate-400 mb-4">* 輸入「-」或留空表示未參賽</p>
+            <div id="scoreInputs" class="space-y-3 mb-8"></div>
+            <div class="bg-white p-6 rounded-[2rem] shadow-xl">
+                <div class="flex justify-between items-center mb-4"><span class="text-slate-500 font-bold">加總校驗</span><span id="totalCheck" class="text-4xl font-black text-rose-500">0</span></div>
+                <button onclick="saveMatch()" id="saveBtn" class="w-full bg-slate-800 text-white py-5 rounded-2xl font-black text-xl shadow-lg disabled:bg-slate-100 disabled:text-slate-300" disabled>儲存本局成績</button>
+            </div>
+        </section>
+
+        <section id="admin-page" class="tab-content">
+            <header class="mb-6 mt-4"><h1 class="text-3xl font-black text-slate-800">系統管理</h1></header>
+
+            <div class="bg-white rounded-3xl p-6 shadow-sm mb-6">
+                <h2 class="font-bold text-slate-800 mb-4">📥 數據導入/匯出</h2>
+                <div class="grid grid-cols-1 gap-3">
+                    <button onclick="exportExcel()" class="bg-slate-800 text-white py-3 rounded-xl text-sm font-bold">📤 匯出 Excel / CSV</button>
+                    <label class="bg-emerald-600 text-white py-3 rounded-xl text-sm font-bold text-center cursor-pointer">
+                        📥 匯入 Excel / CSV
+                        <input type="file" id="importFile" class="hidden" accept=".csv, .xlsx, .xls" onchange="importFromExcel(event)">
+                    </label>
+                </div>
+                <p class="text-[10px] text-slate-400 mt-2 text-center">匯入說明：檔案首欄需為「日期」，其餘欄位為人員姓名。</p>
+            </div>
+
+            <div class="bg-white rounded-3xl p-6 shadow-sm mb-6">
+                <h2 class="font-bold text-slate-800 mb-4">👥 成員管理</h2>
+                <div id="playerManagementList" class="space-y-2 mb-4"></div>
+                <div class="flex gap-2">
+                    <input type="text" id="newPlayerName" placeholder="新成員" class="flex-1 bg-slate-100 p-3 rounded-xl">
+                    <button onclick="addPlayer()" class="bg-emerald-600 text-white px-6 rounded-xl font-bold">＋</button>
+                </div>
+            </div>
+
+            <button onclick="clearData()" class="w-full bg-white p-4 rounded-3xl shadow-sm text-center border border-rose-100 text-rose-600 font-bold">🗑️ 清除所有紀錄</button>
+        </section>
+    </div>
+
+    <script>
+        const DEFAULT_PLAYERS = ["Daniel", "Ken", "Roger", "CK", "Totoron", "Host"];
+        let players = JSON.parse(localStorage.getItem('mj_players')) || DEFAULT_PLAYERS;
+        let records = JSON.parse(localStorage.getItem('mj_records')) || [];
+
+        window.onload = () => {
+            document.getElementById('matchDate').valueAsDate = new Date();
+            updateSeasonLabel();
+            renderScoreInputs();
+            updateDashboard();
+        };
+
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('nav button').forEach(el => el.classList.remove('active-tab'));
+            document.getElementById(`${tabId}-page`).classList.add('active');
+            document.getElementById(`tab-${tabId}`).classList.add('active-tab');
+            if(tabId === 'admin') renderPlayerManagement();
+            if(tabId === 'dashboard') updateDashboard();
+        }
+
+        function updateSeasonLabel() {
+            const d = new Date();
+            document.getElementById('currentSeasonLabel').innerText = `${d.getFullYear()} / Q${Math.ceil((d.getMonth()+1)/3)} 賽季中`;
+        }
+
+        // --- 紀錄功能 ---
+        function renderScoreInputs() {
+            const container = document.getElementById('scoreInputs');
+            container.innerHTML = players.map(p => `
+                <div class="bg-white p-4 rounded-2xl flex items-center shadow-sm border border-slate-50">
+                    <div class="w-1/2 font-black text-slate-700 text-lg">${p}</div>
+                    <div class="w-1/2"><input type="text" oninput="calculateTotal()" data-player="${p}" placeholder="-" class="score-input w-full text-right text-3xl font-mono font-black text-slate-800 bg-transparent border-none focus:ring-0"></div>
+                </div>`).join('');
+        }
+
+        function calculateTotal() {
+            const inputs = document.querySelectorAll('.score-input');
+            let total = 0, activeCount = 0;
+            inputs.forEach(input => {
+                const val = input.value.trim();
+                if(val !== "" && val !== "-") { total += Number(val); activeCount++; }
+            });
+            const display = document.getElementById('totalCheck');
+            const saveBtn = document.getElementById('saveBtn');
+            display.innerText = total;
+            if (total === 0 && activeCount > 0) { display.className = "text-4xl font-black text-emerald-500"; saveBtn.disabled = false; }
+            else { display.className = "text-4xl font-black text-rose-500"; saveBtn.disabled = true; }
+        }
+
+        function saveMatch() {
+            const date = document.getElementById('matchDate').value;
+            const scores = {};
+            document.querySelectorAll('.score-input').forEach(input => {
+                const val = input.value.trim();
+                if(val !== "" && val !== "-") scores[input.dataset.player] = Number(val);
+            });
+            records.push({ date, scores });
+            localStorage.setItem('mj_records', JSON.stringify(records));
+            document.querySelectorAll('.score-input').forEach(i => i.value = '');
+            calculateTotal();
+            alert('✅ 紀錄存檔成功');
+            switchTab('dashboard');
+        }
+
+        // --- 戰報功能 ---
+        function updateDashboard() {
+            const currentYear = new Date().getFullYear();
+            const currentQuarter = Math.ceil((new Date().getMonth() + 1) / 3);
+            const stats = players.map(p => {
+                let yearly = 0, quarterly = 0, count = 0;
+                records.forEach(r => {
+                    const rDate = new Date(r.date);
+                    if (rDate.getFullYear() === currentYear && r.scores[p] !== undefined) {
+                        yearly += r.scores[p]; count++;
+                        if (Math.ceil((rDate.getMonth()+1)/3) === currentQuarter) quarterly += r.scores[p];
+                    }
+                });
+                return { name: p, count, yearly, quarterly };
+            });
+            stats.sort((a, b) => b.yearly - a.yearly);
+            const list = document.getElementById('rankingList');
+            list.innerHTML = stats.map((s, idx) => {
+                let icon = (idx === 0) ? '👑 ' : (idx === stats.length-1 && s.count > 0) ? '💪 ' : '';
+                return `<div class="flex items-center justify-between border-b border-slate-50 pb-4 last:border-0">
+                    <div class="flex items-center gap-4"><span class="text-xl font-black ${idx==0?'text-amber-400':'text-slate-200'}">${idx+1}</span>
+                    <div><p class="font-black text-slate-800 text-lg">${icon}${s.name}</p><p class="text-[10px] font-bold text-slate-400 uppercase">出賽: ${s.count} / 季分: ${s.quarterly}</p></div></div>
+                    <div class="text-right font-mono font-black text-2xl ${s.yearly >= 0 ? 'text-rose-500' : 'text-emerald-600'}">${s.yearly > 0 ? '+' + s.yearly : s.yearly}</div></div>`;
+            }).join('');
+        }
+
+        // --- 匯入匯出核心邏輯 ---
+        function exportExcel() {
+            const wsData = records.map(r => {
+                let row = { "日期": r.date };
+                players.forEach(p => row[p] = r.scores[p] !== undefined ? r.scores[p] : "-");
+                return row;
+            });
+            const ws = XLSX.utils.json_to_sheet(wsData);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Mahjong_Records");
+            XLSX.writeFile(wb, `MJ_Records_${new Date().toISOString().slice(0,10)}.xlsx`);
+        }
+
+        function importFromExcel(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                const jsonData = XLSX.utils.sheet_to_json(firstSheet);
+
+                if (jsonData.length > 0) {
+                    const newRecords = jsonData.map(row => {
+                        let scores = {};
+                        Object.keys(row).forEach(key => {
+                            if (key !== "日期" && row[key] !== "-" && row[key] !== "") {
+                                scores[key] = Number(row[key]);
+                                if (!players.includes(key)) players.push(key); // 自動增加檔案內的新人員
+                            }
+                        });
+                        return { date: row["日期"] || new Date().toISOString().slice(0,10), scores };
+                    });
+
+                    if (confirm(`成功解析 ${newRecords.length} 筆紀錄。是否要覆蓋現有數據？`)) {
+                        records = newRecords;
+                        localStorage.setItem('mj_players', JSON.stringify(players));
+                        localStorage.setItem('mj_records', JSON.stringify(records));
+                        location.reload();
+                    }
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        // --- 基礎管理功能 ---
+        function renderPlayerManagement() {
+            const list = document.getElementById('playerManagementList');
+            list.innerHTML = players.map((p, i) => `<div class="flex justify-between items-center bg-slate-50 p-3 rounded-xl"><span class="font-bold text-slate-700">${p}</span><button onclick="removePlayer(${i})" class="text-rose-400 text-sm">移除</button></div>`).join('');
+            localStorage.setItem('mj_players', JSON.stringify(players));
+        }
+
+        function addPlayer() {
+            const name = document.getElementById('newPlayerName').value.trim();
+            if (name && !players.includes(name)) { players.push(name); document.getElementById('newPlayerName').value = ''; renderPlayerManagement(); renderScoreInputs(); }
+        }
+
+        function removePlayer(index) { if(confirm("確定移除？")) { players.splice(index, 1); renderPlayerManagement(); renderScoreInputs(); } }
+
+        function exportImage() {
+            html2canvas(document.getElementById('dashboardCard'), { scale: 2 }).then(canvas => {
+                const link = document.createElement('a');
+                link.download = '戰報.png';
+                link.href = canvas.toDataURL();
+                link.click();
+            });
+        }
+
+        function clearData() { if(confirm("確定清除所有紀錄？")) { localStorage.removeItem('mj_records'); location.reload(); } }
+    </script>
+</body>
+</html>
