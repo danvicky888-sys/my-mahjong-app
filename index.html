@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>麻將競技紀錄戰情室</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&display=swap');
+        body { font-family: 'Noto Sans TC', sans-serif; background: #f0f2f5; }
+        .card { background: white; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+        .input-focus:focus { border-color: #059669; outline: none; ring: 2px; ring-color: #10b981; }
+    </style>
+</head>
+<body class="p-4 pb-10">
+
+    <div class="max-w-2xl mx-auto">
+        <header class="text-center mb-8">
+            <h1 class="text-3xl font-black text-emerald-800 tracking-wider">🀄 麻將大賽紀錄系統</h1>
+            <p class="text-gray-500 text-sm mt-2">年度戰績即時監控</p>
+        </header>
+
+        <section class="card p-6 mb-6 border-t-4 border-emerald-600">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-bold text-gray-800">📝 新增比賽紀錄</h2>
+                <input type="date" id="matchDate" class="border rounded-lg p-1 text-sm text-gray-600">
+            </div>
+            
+            <div id="scoreInputs" class="space-y-3">
+                </div>
+
+            <div class="mt-8 p-4 bg-emerald-50 rounded-xl">
+                <div class="flex justify-between items-center mb-4">
+                    <span class="font-bold text-gray-700 text-lg">目前總計：</span>
+                    <span id="totalCheck" class="text-2xl font-black text-red-500">0</span>
+                </div>
+                <button onclick="saveMatch()" id="saveBtn" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-xl font-black text-lg shadow-lg transform transition active:scale-95 opacity-50 cursor-not-allowed" disabled>
+                    確認存檔 (總和需為 0)
+                </button>
+            </div>
+        </section>
+
+        <section id="dashboard" class="card p-6 mb-6">
+            <div class="flex justify-between items-center mb-4 border-b pb-2">
+                <h2 class="text-xl font-bold text-gray-800">📊 年度數據看板</h2>
+                <button onclick="exportImage()" class="text-xs bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full font-bold">📸 生成報表圖片</button>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-center">
+                    <thead>
+                        <tr class="text-gray-400 text-sm border-b">
+                            <th class="pb-2 text-left">選手</th>
+                            <th class="pb-2">場次</th>
+                            <th class="pb-2">年度總分</th>
+                            <th class="pb-2">本季分數</th>
+                        </tr>
+                    </thead>
+                    <tbody id="rankingTable" class="divide-y">
+                        </tbody>
+                </table>
+            </div>
+        </section>
+
+        <details class="mb-6">
+            <summary class="text-gray-400 text-sm cursor-pointer hover:text-gray-600 text-center">管理員工具 (增減人員 / 匯出數據)</summary>
+            <div class="card p-4 mt-2 bg-gray-50 border-2 border-dashed border-gray-200">
+                <div class="flex gap-2 mb-4">
+                    <input type="text" id="newPlayerName" placeholder="新增人員" class="flex-1 border p-2 rounded-lg">
+                    <button onclick="addPlayer()" class="bg-gray-800 text-white px-4 rounded-lg">＋</button>
+                </div>
+                <div id="playerManagementList" class="flex flex-wrap gap-2 mb-4"></div>
+                <div class="grid grid-cols-2 gap-2">
+                    <button onclick="exportExcel()" class="bg-blue-100 text-blue-700 py-2 rounded-lg text-sm font-bold">📥 匯出 Excel</button>
+                    <button onclick="clearData()" class="bg-red-50 text-red-600 py-2 rounded-lg text-sm font-bold">⚠️ 清除資料</button>
+                </div>
+            </div>
+        </details>
+    </div>
+
+    <script>
+        // 預設名單
+        const DEFAULT_PLAYERS = ["Daniel", "Ken", "Roger", "CK", "Totoron", "Host"];
+        
+        let players = JSON.parse(localStorage.getItem('mj_players')) || DEFAULT_PLAYERS;
+        let records = JSON.parse(localStorage.getItem('mj_records')) || [];
+
+        window.onload = () => {
+            document.getElementById('matchDate').valueAsDate = new Date();
+            renderScoreInputs();
+            renderPlayerManagement();
+            updateDashboard();
+        };
+
+        // 渲染輸入區域
+        function renderScoreInputs() {
+            const container = document.getElementById('scoreInputs');
+            container.innerHTML = players.map(p => `
+                <div class="flex items-center gap-4 p-3 bg-white border border-gray-100 rounded-xl shadow-sm">
+                    <span class="w-20 font-bold text-gray-700 truncate">${p}</span>
+                    <input type="number" step="1" placeholder="0" oninput="calculateTotal()" 
+                        data-player="${p}" class="score-input flex-1 p-2 bg-gray-50 rounded-lg text-right font-mono text-lg focus:bg-white transition border-none focus:ring-2 focus:ring-emerald-500">
+                    <button onclick="startVoice('${p}')" class="text-xl hover:scale-110 transition grayscale focus:grayscale-0">🎤</button>
+                </div>
+            `).join('');
+        }
+
+        // 語音輸入
+        function startVoice(playerName) {
+            const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+            recognition.lang = 'zh-TW';
+            recognition.start();
+            recognition.onresult = (event) => {
+                let text = event.results[0][0].transcript;
+                // 處理中文數字與負號
+                let score = parseInt(text.replace(/[^0-9-]/g, ''));
+                if (!isNaN(score)) {
+                    document.querySelector(`input[data-player="${playerName}"]`).value = score;
+                    calculateTotal();
+                }
+            };
+        }
+
+        // 加總校驗
+        function calculateTotal() {
+            const inputs = document.querySelectorAll('.score-input');
+            let total = 0;
+            inputs.forEach(input => total += Number(input.value || 0));
+            
+            const display = document.getElementById('totalCheck');
+            const saveBtn = document.getElementById('saveBtn');
+            display.innerText = total;
+
+            if (total === 0 && Array.from(inputs).some(i => i.value !== "")) {
+                display.className = "text-2xl font-black text-emerald-600";
+                saveBtn.disabled = false;
+                saveBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+            } else {
+                display.className = "text-2xl font-black text-red-500";
+                saveBtn.disabled = true;
+                saveBtn.classList.add('opacity-50', 'cursor-not-allowed');
+            }
+        }
+
+        // 存檔紀錄
+        function saveMatch() {
+            const date = document.getElementById('matchDate').value;
+            const scores = {};
+            document.querySelectorAll('.score-input').forEach(input => {
+                scores[input.dataset.player] = Number(input.value || 0);
+            });
+
+            records.push({ date, scores });
+            localStorage.setItem('mj_records', JSON.stringify(records));
+            
+            // 清空輸入
+            document.querySelectorAll('.score-input').forEach(i => i.value = '');
+            calculateTotal();
+            updateDashboard();
+            alert('✅ 戰績已紀錄！');
+        }
+
+        // 季度計算
+        function getQuarter(dateStr) {
+            const month = new Date(dateStr).getMonth() + 1;
+            return Math.ceil(month / 3);
+        }
+
+        // 更新數據看板
+        function updateDashboard() {
+            const currentYear = new Date().getFullYear();
+            const currentQuarter = getQuarter(new Date());
+            
+            const stats = players.map(p => {
+                let yearlySum = 0, quarterlySum = 0, count = 0;
+                records.forEach(r => {
+                    const rDate = new Date(r.date);
+                    if (rDate.getFullYear() === currentYear && r.scores[p] !== undefined && r.scores[p] !== 0) {
+                        yearlySum += r.scores[p];
+                        count++;
+                        if (getQuarter(r.date) === currentQuarter) {
+                            quarterlySum += r.scores[p];
+                        }
+                    }
+                });
+                return { name: p, count, yearlySum, quarterlySum };
+            });
+
+            stats.sort((a, b) => b.yearlySum - a.yearlySum);
+
+            const tbody = document.getElementById('rankingTable');
+            tbody.innerHTML = stats.map((s, idx) => `
+                <tr class="hover:bg-gray-50 transition">
+                    <td class="py-4 text-left font-bold text-gray-700">
+                        <span class="inline-block w-6 text-xs text-gray-400 font-normal">${idx+1}</span>
+                        ${s.name}
+                    </td>
+                    <td class="py-4 text-gray-500 text-sm">${s.count}</td>
+                    <td class="py-4 font-mono font-bold ${s.yearlySum >= 0 ? 'text-red-500' : 'text-emerald-600'}">${s.yearlySum > 0 ? '+' + s.yearlySum : s.yearlySum}</td>
+                    <td class="py-4 text-xs ${s.quarterlySum >= 0 ? 'text-red-400' : 'text-emerald-500'}">${s.quarterlySum}</td>
+                </tr>
+            `).join('');
+        }
+
+        // 管理員：增減人員
+        function renderPlayerManagement() {
+            const list = document.getElementById('playerManagementList');
+            list.innerHTML = players.map((p, i) => `
+                <span class="bg-gray-200 text-gray-700 px-3 py-1 rounded-full text-sm flex items-center">
+                    ${p} <button onclick="removePlayer(${i})" class="ml-2 text-gray-400 hover:text-red-500">&times;</button>
+                </span>
+            `).join('');
+            localStorage.setItem('mj_players', JSON.stringify(players));
+        }
+
+        function addPlayer() {
+            const name = document.getElementById('newPlayerName').value.trim();
+            if (name && !players.includes(name) && players.length < 8) {
+                players.push(name);
+                document.getElementById('newPlayerName').value = '';
+                renderPlayerManagement();
+                renderScoreInputs();
+                updateDashboard();
+            }
+        }
+
+        function removePlayer(index) {
+            if(confirm("確定要刪除此成員嗎？")) {
+                players.splice(index, 1);
+                renderPlayerManagement();
+                renderScoreInputs();
+                updateDashboard();
+            }
+        }
+
+        // 工具函式：Excel 與 圖片
+        function exportExcel() {
+            const wsData = records.map(r => ({ "日期": r.date, ...r.scores }));
+            const ws = XLSX.utils.json_to_sheet(wsData);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "麻將戰績");
+            XLSX.writeFile(wb, `MJ_Records_${new Date().getFullYear()}.xlsx`);
+        }
+
+        function exportImage() {
+            const element = document.getElementById('dashboard');
+            html2canvas(element, { scale: 2 }).then(canvas => {
+                const link = document.createElement('a');
+                link.download = `麻將戰績報表_${new Date().toISOString().slice(0,10)}.png`;
+                link.href = canvas.toDataURL();
+                link.click();
+            });
+        }
+
+        function clearData() {
+            if(confirm("⚠️ 注意！這將清除所有歷史比賽紀錄。確定嗎？")) {
+                localStorage.removeItem('mj_records');
+                location.reload();
+            }
+        }
+    </script>
+</body>
+</html>
