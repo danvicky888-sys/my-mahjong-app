@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>麻將戰績紀錄 v9.0</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
+        body { font-family: 'Noto Sans TC', sans-serif; background-color: #f8fafc; touch-action: manipulation; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .active-tab { border-bottom: 4px solid #10b981; color: #10b981; font-weight: 900; }
+        .filter-btn.active { background-color: #10b981; color: white; }
+        .recording-pulse { animation: pulse 1s infinite; background-color: #ef4444 !important; color: white !important; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
+        .table-container { overflow-x: auto; }
+        input[type="number"]::-webkit-inner-spin-button { display: none; }
+    </style>
+</head>
+<body class="pb-24">
+
+    <nav class="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 flex z-50 shadow-lg">
+        <button onclick="switchTab('dashboard')" id="tab-dashboard" class="flex-1 py-4 active-tab">📊 戰報</button>
+        <button onclick="switchTab('record')" id="tab-record" class="flex-1 py-4 text-slate-400">📝 紀錄</button>
+        <button onclick="switchTab('admin')" id="tab-admin" class="flex-1 py-4 text-slate-400">⚙️ 管理</button>
+    </nav>
+
+    <div class="max-w-4xl mx-auto p-4">
+        
+        <section id="dashboard-page" class="tab-content active">
+            <div class="mb-4 flex justify-between items-center">
+                <h1 class="text-2xl font-black">年度數據</h1>
+                <button onclick="resetPlayerFilter()" id="resetBtn" class="hidden text-xs bg-slate-200 px-3 py-1 rounded-full font-bold">顯示全部</button>
+            </div>
+
+            <div class="bg-white rounded-3xl p-4 shadow-sm mb-4 h-64 border border-slate-100">
+                <canvas id="trendChart"></canvas>
+            </div>
+
+            <div id="rankingList" class="space-y-3 mb-6"></div>
+
+            <h2 class="text-lg font-black mb-3 px-2">📋 歷史明細表</h2>
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                <div class="table-container">
+                    <table class="w-full text-sm">
+                        <thead class="bg-slate-50 border-b border-slate-100">
+                            <tr id="tableHeader"></tr>
+                        </thead>
+                        <tbody id="tableBody" class="divide-y divide-slate-50"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <section id="record-page" class="tab-content">
+            <div class="flex justify-between items-center mb-6">
+                <h1 class="text-2xl font-black">記帳紀錄</h1>
+                <input type="date" id="matchDate" class="border rounded px-2 py-1 text-sm">
+            </div>
+            <div id="scoreInputs" class="space-y-3 mb-6"></div>
+            <div class="bg-slate-900 p-6 rounded-3xl text-white shadow-xl">
+                <div class="flex justify-between items-center mb-4">
+                    <span class="font-bold opacity-70">加總校驗 (需為 0)</span>
+                    <span id="totalCheck" class="text-4xl font-black text-rose-400">0</span>
+                </div>
+                <button onclick="saveMatch()" id="saveBtn" disabled class="w-full bg-emerald-500 py-4 rounded-xl font-black text-xl disabled:bg-slate-700 transition-all">儲存本局</button>
+            </div>
+        </section>
+
+        <section id="admin-page" class="tab-content">
+            <div class="space-y-4 pt-4">
+                <button onclick="exportExcel()" class="w-full bg-slate-800 text-white p-4 rounded-2xl font-bold">📤 匯出備份 (Excel)</button>
+                <label class="block w-full bg-white border-2 border-slate-200 p-4 rounded-2xl font-bold text-center">📥 匯入資料 (CSV)<input type="file" class="hidden" onchange="importFromExcel(event)"></label>
+                <button onclick="clearData()" class="w-full text-rose-400 text-sm mt-10">🗑️ 清空所有數據</button>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        let players = JSON.parse(localStorage.getItem('mj_players')) || ["Daniel", "Ken", "Roger", "CK", "Totoron", "Host"];
+        let records = JSON.parse(localStorage.getItem('mj_records')) || [];
+        let focusedPlayer = null;
+        let trendChart = null;
+
+        // --- 核心修復：語音辨識 ---
+        function startVoice(p) {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) return alert("您的設備不支援語音辨識，請使用 Chrome/Safari");
+            
+            const recognition = new SpeechRecognition();
+            recognition.lang = 'zh-TW';
+            const btn = document.getElementById(`vbtn-${p}`);
+            
+            recognition.onstart = () => btn.classList.add('recording-pulse');
+            recognition.onend = () => btn.classList.remove('recording-pulse');
+            recognition.onresult = (e) => {
+                let txt = e.results[0][0].transcript;
+                let val = txt.replace(/負/g, '-').replace(/萬/g, '0000').replace(/千/g, '000').replace(/百/g, '00').replace(/[^0-9-]/g, '');
+                if (val) {
+                    const input = document.querySelector(`input[data-player="${p}"]`);
+                    input.value = parseInt(val);
+                    calculateTotal();
+                }
+            };
+            recognition.start();
+        }
+
+        // --- 核心修復：原位編輯功能 ---
+        function enterEditMode(idx) {
+            const row = document.getElementById(`row-${idx}`);
+            const r = records[idx];
+            row.innerHTML = `
+                <td class="p-2"><input type="date" id="edit-date-${idx}" value="${r.date}" class="w-full text-xs border"></td>
+                ${players.map(p => `
+                    <td class="p-1"><input type="number" id="edit-score-${idx}-${p}" value="${r.scores[p] || 0}" class="w-full p-1 border text-xs font-mono"></td>
+                `).join('')}
+                <td class="p-2 text-center">
+                    <button onclick="saveEdit(${idx})" class="text-emerald-500 font-bold block mb-1">儲存</button>
+                    <button onclick="updateDashboard()" class="text-slate-400 text-xs">取消</button>
+                </td>
+            `;
+        }
+
+        function saveEdit(idx) {
+            const newDate = document.getElementById(`edit-date-${idx}`).value;
+            let newScores = {};
+            let sum = 0;
+            players.forEach(p => {
+                const val = parseInt(document.getElementById(`edit-score-${idx}-${p}`).value) || 0;
+                newScores[p] = val;
+                sum += val;
+            });
+
+            if (sum === 0) {
+                records[idx] = { date: newDate, scores: newScores };
+                localStorage.setItem('mj_records', JSON.stringify(records));
+                updateDashboard();
+                alert("修改成功！");
+            } else {
+                alert(`校驗失敗：總和必須為 0 (目前為 ${sum})`);
+            }
+        }
+
+        // --- 排行榜與圖表 ---
+        function updateDashboard() {
+            renderChart(records);
+            renderLeaderboard(records);
+            renderTable(records);
+        }
+
+        function renderChart(filtered) {
+            const ctx = document.getElementById('trendChart');
+            if (trendChart) trendChart.destroy();
+            const datasets = (focusedPlayer ? [focusedPlayer] : players).map((name, i) => {
+                let sum = 0;
+                return {
+                    label: name,
+                    data: filtered.map(r => { sum += (r.scores[name] || 0); return sum; }),
+                    borderColor: focusedPlayer ? '#10b981' : ['#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#64748b'][i % 6],
+                    tension: 0.1
+                };
+            });
+            trendChart = new Chart(ctx, { type: 'line', data: { labels: filtered.map(r => r.date.substring(5)), datasets }, options: { responsive: true, maintainAspectRatio: false } });
+        }
+
+        function renderLeaderboard(filtered) {
+            const stats = players.map(p => {
+                let total = 0, count = 0;
+                filtered.forEach(r => { if(r.scores[p] !== undefined) { total += r.scores[p]; count++; } });
+                return { name: p, total, count };
+            }).sort((a,b) => b.total - a.total);
+
+            document.getElementById('rankingList').innerHTML = stats.map((s, i) => `
+                <div onclick="focusPlayer('${s.name}')" class="bg-white p-4 rounded-2xl flex justify-between items-center shadow-sm border ${focusedPlayer === s.name ? 'border-emerald-500 ring-2 ring-emerald-100' : 'border-slate-50'}">
+                    <div class="flex items-center gap-3">
+                        <span class="font-black text-slate-200">${i+1}</span>
+                        <div><p class="font-black text-slate-800">${s.name}</p><p class="text-[10px] text-slate-400 uppercase font-bold">Total Games: ${s.count}</p></div>
+                    </div>
+                    <div class="font-mono font-black text-xl ${s.total >= 0 ? 'text-rose-500' : 'text-emerald-600'}">${s.total > 0 ? '+' + s.total : s.total}</div>
+                </div>`).join('');
+        }
+
+        function renderTable(filtered) {
+            const header = document.getElementById('tableHeader');
+            header.innerHTML = `<th class="p-3 text-left">日期</th>` + players.map(p => `<th class="p-3">${p}</th>`).join('') + `<th class="p-3"></th>`;
+            
+            const body = document.getElementById('tableBody');
+            body.innerHTML = [...filtered].reverse().map((r, i) => {
+                const idx = records.indexOf(r);
+                return `<tr id="row-${idx}">
+                    <td class="p-3 whitespace-nowrap font-bold text-slate-400">${r.date}</td>
+                    ${players.map(p => `<td class="p-3 font-mono ${r.scores[p] > 0 ? 'text-rose-500' : (r.scores[p] < 0 ? 'text-emerald-600' : 'text-slate-200')}">${r.scores[p] ?? '-'}</td>`).join('')}
+                    <td class="p-3 text-center">
+                        <button onclick="enterEditMode(${idx})" class="text-blue-500 font-bold mb-2 block">改</button>
+                        <button onclick="deleteRecord(${idx})" class="text-rose-300 text-xs">刪</button>
+                    </td>
+                </tr>`;
+            }).join('');
+        }
+
+        // --- 基礎通用功能 ---
+        function renderScoreInputs() {
+            document.getElementById('scoreInputs').innerHTML = players.map(p => `
+                <div class="bg-white p-4 rounded-2xl flex items-center shadow-sm border border-slate-100">
+                    <div class="w-1/3 font-black text-slate-600">${p}</div>
+                    <div class="w-1/3 text-center"><button onclick="startVoice('${p}')" id="vbtn-${p}" class="text-[10px] bg-slate-100 px-3 py-1 rounded-full text-emerald-600 font-bold border border-emerald-100">🎤 語音</button></div>
+                    <div class="w-1/3"><input type="number" oninput="calculateTotal()" data-player="${p}" placeholder="0" class="score-input w-full text-right text-2xl font-mono font-black border-none focus:outline-none bg-transparent"></div>
+                </div>`).join('');
+        }
+
+        function calculateTotal() {
+            let total = 0, count = 0;
+            document.querySelectorAll('.score-input').forEach(i => { if(i.value) { total += parseInt(i.value); count++; } });
+            const display = document.getElementById('totalCheck');
+            display.innerText = total;
+            display.className = (total === 0) ? "text-4xl font-black text-emerald-400" : "text-4xl font-black text-rose-400";
+            document.getElementById('saveBtn').disabled = !(total === 0 && count > 0);
+        }
+
+        function saveMatch() {
+            const scores = {};
+            document.querySelectorAll('.score-input').forEach(i => { if(i.value) scores[i.dataset.player] = parseInt(i.value); });
+            records.push({ date: document.getElementById('matchDate').value, scores });
+            localStorage.setItem('mj_records', JSON.stringify(records));
+            alert("已儲存！");
+            location.reload();
+        }
+
+        function focusPlayer(name) { focusedPlayer = name; document.getElementById('resetBtn').classList.remove('hidden'); updateDashboard(); }
+        function resetPlayerFilter() { focusedPlayer = null; document.getElementById('resetBtn').classList.add('hidden'); updateDashboard(); }
+        function switchTab(t) { 
+            document.querySelectorAll('.tab-content').forEach(e => e.classList.remove('active'));
+            document.querySelectorAll('nav button').forEach(e => e.classList.add('text-slate-400'));
+            document.getElementById(`${t}-page`).classList.add('active');
+            document.getElementById(`tab-${t}`).classList.remove('text-slate-400');
+            if(t==='dashboard') updateDashboard();
+        }
+        function deleteRecord(idx) { if(confirm("確定刪除？")) { records.splice(idx,1); localStorage.setItem('mj_records', JSON.stringify(records)); updateDashboard(); } }
+        function clearData() { if(confirm("確定全部清空？")) { localStorage.clear(); location.reload(); } }
+        function exportExcel() {
+            const data = records.map(r => { let row = { "日期": r.date }; players.forEach(p => row[p] = r.scores[p] ?? "-"); return row; });
+            const ws = XLSX.utils.json_to_sheet(data);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "MJ_Data");
+            XLSX.writeFile(wb, "MJ_History.xlsx");
+        }
+        function importFromExcel(e) {
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                const workbook = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
+                const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+                records = jsonData.map(row => {
+                    let scores = {};
+                    Object.keys(row).forEach(k => { if(k !== "日期" && k !== "Date" && k !== "Total" && row[k] !== "-") scores[k] = Number(row[row[k] === undefined ? k : k]); });
+                    let rawDate = row["日期"] || row["Date"] || new Date().toISOString().slice(0,10);
+                    return { date: rawDate.toString().replace(/年|月/g, '-').replace(/日/g, ''), scores };
+                });
+                localStorage.setItem('mj_records', JSON.stringify(records));
+                location.reload();
+            };
+            reader.readAsArrayBuffer(e.target.files[0]);
+        }
+
+        window.onload = () => {
+            document.getElementById('matchDate').valueAsDate = new Date();
+            renderScoreInputs();
+            updateDashboard();
+        };
+    </script>
+</body>
+</html>
